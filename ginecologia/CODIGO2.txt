@@ -1,0 +1,818 @@
+ANDROIDMANIFEST.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Medisum"
+        android:usesCleartextTraffic="true">
+        <activity
+            android:name=".WebViewActivity"
+            android:exported="false" />
+        <activity
+            android:name=".FilesActivity"
+            android:exported="false" />
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+
+
+FILESFRAGMENT.KT
+
+package com.example.medisum
+
+import android.os.Bundle
+import android.view.*
+import android.widget.*
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.*
+import okhttp3.*
+import org.json.JSONArray
+import androidx.core.content.ContextCompat
+import android.graphics.Typeface
+
+class FilesFragment : Fragment(), Refreshable {
+
+    private lateinit var filesContainer: LinearLayout
+    private lateinit var progressBar: ProgressBar
+    private var folderName: String = ""
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        folderName = arguments?.getString("folderName") ?: ""
+    }
+
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
+        val view = inflater.inflate(R.layout.activity_files, container, false)
+        filesContainer = view.findViewById(R.id.filesContainer)
+        progressBar = ProgressBar(requireContext())
+
+        refreshFiles()
+        return view
+
+    }
+
+    override fun onRefresh() {
+        refreshFiles()
+    }
+
+    private fun refreshFiles() {
+        lifecycleScope.launch {
+            showLoading()
+            val files = fetchFiles()
+            requireActivity().runOnUiThread {
+                hideLoading()
+                if (files.isEmpty()) {
+                    Toast.makeText(requireContext(), "No se encontraron archivos", Toast.LENGTH_SHORT).show()
+                } else {
+                    createFileButtons(files)
+                }
+            }
+        }
+    }
+
+    private fun showLoading() {
+        filesContainer.removeAllViews()
+        filesContainer.addView(progressBar)
+    }
+
+    private fun hideLoading() {
+        filesContainer.removeView(progressBar)
+    }
+
+    private fun createFileButtons(files: List<String>) {
+        filesContainer.removeAllViews()
+
+        files.forEachIndexed { index, fileName ->
+            val cleanName = fileName.removeSuffix(".html")
+
+            val itemLayout = LinearLayout(requireContext()).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
+
+            val textView = TextView(requireContext()).apply {
+                text = "${index + 1}. $cleanName"
+                textSize = 17f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(ContextCompat.getColor(context, android.R.color.black))
+                setPadding(8, 16, 8, 16)
+                setOnClickListener {
+                    parentFragmentManager.beginTransaction()
+                        .replace(R.id.fragmentContainer, WebViewFragment.newInstance(folderName, fileName))
+                        .addToBackStack(null)
+                        .commit()
+                }
+            }
+
+            val divider = View(requireContext()).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    1
+                )
+                setBackgroundColor(ContextCompat.getColor(context, android.R.color.darker_gray))
+            }
+
+            itemLayout.addView(textView)
+            itemLayout.addView(divider)
+            filesContainer.addView(itemLayout)
+        }
+    }
+
+    private suspend fun fetchFiles(): List<String> = withContext(Dispatchers.IO) {
+        try {
+            val url = "https://api.github.com/repos/psy3com-hub/medsum/contents/$folderName"
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Medisum-App")
+                .build()
+
+            OkHttpClient().newCall(request).execute().use { response ->
+                val jsonArray = JSONArray(response.body?.string())
+                List(jsonArray.length()) {
+                    val item = jsonArray.getJSONObject(it)
+                    item.optString("name").takeIf {
+                        item.getString("type") == "file" && item.getString("name").endsWith(".html")
+                    }
+                }.filterNotNull()
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    companion object {
+        fun newInstance(folderName: String) = FilesFragment().apply {
+            arguments = Bundle().apply {
+                putString("folderName", folderName)
+            }
+        }
+    }
+}
+
+
+
+MAINACTIVITY.KT
+
+package com.example.medisum
+
+import android.os.Bundle
+import android.widget.Button
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
+import android.view.View
+import androidx.core.content.ContextCompat
+
+class MainActivity : AppCompatActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        applyUserTheme()
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_base)
+
+        // Mostrar FoldersFragment al inicio
+        if (savedInstanceState == null) {
+            supportFragmentManager.beginTransaction()
+                .replace(R.id.fragmentContainer, FoldersFragment())
+                .commit()
+        }
+
+        setupToolbar()
+    }
+
+    private fun setupToolbar() {
+
+        val prefs = getSharedPreferences("app_settings", 0)
+        val rounded = prefs.getBoolean("rounded_buttons", true)
+        val bgDrawable = if (rounded)
+            R.drawable.toolbar_button_rounded
+        else
+            R.drawable.toolbar_button_square
+
+        listOf(R.id.btnHome, R.id.btnBack, R.id.btnRefresh, R.id.btnSettings).forEach { id ->
+            findViewById<Button>(id).background = ContextCompat.getDrawable(this, bgDrawable)
+        }
+
+
+        findViewById<Button>(R.id.btnHome).setOnClickListener {
+            supportFragmentManager.popBackStack(
+                null,
+                androidx.fragment.app.FragmentManager.POP_BACK_STACK_INCLUSIVE
+            )
+            supportFragmentManager.beginTransaction()
+                .replace(R.id.fragmentContainer, FoldersFragment())
+                .commit()
+        }
+
+        findViewById<Button>(R.id.btnBack).setOnClickListener {
+            onBackPressed()
+        }
+
+        findViewById<Button>(R.id.btnRefresh).setOnClickListener {
+            val fragment = supportFragmentManager.findFragmentById(R.id.fragmentContainer)
+            if (fragment is Refreshable) {
+                fragment.onRefresh()
+            }
+        }
+
+        findViewById<Button>(R.id.btnSettings).setOnClickListener {
+            val dialog = SettingsDialogFragment()
+            dialog.show(supportFragmentManager, "SettingsDialog")
+        }
+    }
+
+    private fun applyUserTheme() {
+        val prefs = getSharedPreferences("app_settings", 0)
+        val dark  = prefs.getBoolean("dark_mode", false)
+
+        // Modo claro / oscuro
+        AppCompatDelegate.setDefaultNightMode(
+            if (dark) AppCompatDelegate.MODE_NIGHT_YES
+            else      AppCompatDelegate.MODE_NIGHT_NO
+        )
+
+        // Colores base
+        val toolbarColor = if (dark)
+            ContextCompat.getColor(this, R.color.teal_dark_bg)
+        else
+            ContextCompat.getColor(this, R.color.teal_primary)
+
+        window.statusBarColor = toolbarColor
+        findViewById<View>(R.id.topBar)?.setBackgroundColor(toolbarColor)
+
+        // Guardar color para los fragments
+        getSharedPreferences("app_runtime",0)
+            .edit().putInt("theme_toolbar_color", toolbarColor).apply()
+    }
+}
+
+
+
+SETTINGSDIALOGFRAGMENT.KT
+
+package com.example.medisum
+
+import android.app.Dialog
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.widget.*
+import androidx.appcompat.app.AlertDialog
+import androidx.core.content.edit
+import androidx.fragment.app.DialogFragment
+
+class SettingsDialogFragment : DialogFragment() {
+
+    override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
+        val prefs = requireContext().getSharedPreferences("app_settings", 0)
+
+        val view = LayoutInflater.from(requireContext())
+            .inflate(R.layout.dialog_settings, null)
+
+        val darkModeSwitch = view.findViewById<Switch>(R.id.switchDarkMode)
+        val shapeSwitch    = view.findViewById<Switch>(R.id.switchButtonShape)
+        val fontSizeGroup  = view.findViewById<RadioGroup>(R.id.radioGroupFontSize)
+
+        // Cargar valores actuales
+        darkModeSwitch.isChecked = prefs.getBoolean("dark_mode", false)
+        shapeSwitch.isChecked    = prefs.getBoolean("rounded_buttons", true)
+        when (prefs.getString("font_size", "normal")) {
+            "small" -> fontSizeGroup.check(R.id.radioSmall)
+            "large" -> fontSizeGroup.check(R.id.radioLarge)
+            else    -> fontSizeGroup.check(R.id.radioNormal)
+        }
+
+        val dialog = AlertDialog.Builder(requireContext())
+            .setTitle("Personalizar app")
+            .setView(view)
+            .setPositiveButton("Guardar", null)   // se sobre-escribe más abajo
+            .setNegativeButton("Cancelar") { _, _ -> dismiss() }
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                prefs.edit {
+                    putBoolean("dark_mode", darkModeSwitch.isChecked)
+                    putBoolean("rounded_buttons", shapeSwitch.isChecked)
+                    putString(
+                        "font_size",
+                        when (fontSizeGroup.checkedRadioButtonId) {
+                            R.id.radioSmall -> "small"
+                            R.id.radioLarge -> "large"
+                            else            -> "normal"
+                        }
+                    )
+                }
+                activity?.recreate()  // recarga la UI con el nuevo tema
+                dismiss()
+            }
+        }
+        return dialog
+    }
+}
+
+
+
+WEBVIEWFRAGMENT.KT
+
+// WebViewFragment.kt
+package com.example.medisum
+
+import android.os.Bundle
+import android.view.*
+import android.webkit.*
+import androidx.fragment.app.Fragment
+
+class WebViewFragment : Fragment() {
+
+    private var folderName: String = ""
+    private var fileName: String = ""
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        folderName = arguments?.getString("folderName") ?: ""
+        fileName = arguments?.getString("fileName") ?: ""
+    }
+
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
+        val view = inflater.inflate(R.layout.activity_webview, container, false)
+        val webView = view.findViewById<WebView>(R.id.webView)
+
+        val folder = arguments?.getString("folderName") ?: ""
+        val file   = arguments?.getString("fileName") ?: ""
+        val url    = "https://htmlpreview.github.io/?https://raw.githubusercontent.com/psy3com-hub/medsum/main/$folder/$file"
+        webView.loadUrl(url)
+
+        webView.settings.javaScriptEnabled = true
+        webView.webViewClient = WebViewClient()
+        webView.loadUrl("https://psy3com-hub.github.io/medsum/$folderName/$fileName")
+
+        val isDark = resources.configuration.uiMode and
+                android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
+                android.content.res.Configuration.UI_MODE_NIGHT_YES
+
+        if (isDark) {
+            webView.setBackgroundColor(android.graphics.Color.BLACK)
+            webView.settings.javaScriptEnabled = true
+
+            webView.evaluateJavascript(
+                """
+    (function() {
+        // Cambiar fondo y texto base
+        document.body.style.backgroundColor = "#000";
+        document.body.style.color = "#eee";
+
+        // Cambiar todos los elementos con color negro inline y que NO sean <b> ni <strong>
+        var elems = document.querySelectorAll("*:not(b):not(strong)");
+        elems.forEach(function(el) {
+            // Obtener el color computado
+            var style = window.getComputedStyle(el);
+            if (style.color === "rgb(0, 0, 0)" || style.color === "#000000") {
+                el.style.color = "#eee";
+            }
+        });
+
+        // Ajustar enlaces y código
+        var links = document.querySelectorAll("a");
+        links.forEach(link => link.style.color = "#80dfff");
+
+        var codeBlocks = document.querySelectorAll("code, pre");
+        codeBlocks.forEach(block => {
+            block.style.backgroundColor = "#111";
+            block.style.color = "#f8f8f2";
+        });
+    })();
+    """.trimIndent(),
+                null
+            )
+        }
+
+        val sizePref = requireContext()
+            .getSharedPreferences("app_settings",0)
+            .getString("font_size", "normal")
+
+        val zoom = when (sizePref) {
+            "small"  -> 75
+            "large"  -> 125
+            else     -> 100
+        }
+        webView.settings.textZoom = zoom
+
+        return view
+    }
+
+    companion object {
+        fun newInstance(folderName: String, fileName: String) = WebViewFragment().apply {
+            arguments = Bundle().apply {
+                putString("folderName", folderName)
+                putString("fileName", fileName)
+            }
+        }
+    }
+}
+
+
+
+ROUNDED_BUTTON_SELECTOR.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/teal_primaryDark"/>
+            <corners android:radius="12dp"/>
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/teal_primary"/>
+            <corners android:radius="12dp"/>
+        </shape>
+    </item>
+</selector>
+
+
+SQUARE_BUTTON_SELECTOR.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/teal_primaryDark"/>
+            <corners android:radius="0dp"/>
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/teal_primary"/>
+            <corners android:radius="0dp"/>
+        </shape>
+    </item>
+</selector>
+
+
+TOOLBAR_BUTTON_BACKGROUND.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#CDDC39" />
+            <corners android:radius="12dp"/>
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#CDDC39"/>
+            <corners android:radius="12dp"/>
+        </shape>
+    </item>
+</selector>
+
+
+TOOLBAR_BUTTON_ROUNDED.XML
+
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <!-- Azul con 80% de opacidad (FF = 100%, 80 = ~50%) -->
+    <solid android:color="#40039BE5" /> <!-- azul semitransparente -->
+    <corners android:radius="12dp"/>
+</shape>
+
+
+TOOLBAR_BUTTON_SQUARE.XML
+
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#40039BE5" />
+    <corners android:radius="0dp"/>
+</shape>
+
+
+ACTIVITY_BASE.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- Toolbar fijo -->
+    <include layout="@layout/toolbar" android:id="@+id/topBar" />
+
+    <!-- Fragment container -->
+    <FrameLayout
+        android:id="@+id/fragmentContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+</LinearLayout>
+
+
+ACTIVITY_FILES.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/fondomedisum">
+
+    <LinearLayout
+        android:id="@+id/filesContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp"/>
+</ScrollView>
+
+
+ACTIVITY_MAIN.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/fondomedisum">
+
+    <LinearLayout
+        android:id="@+id/foldersContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp"/>
+</ScrollView>
+
+
+ACTIVITY_WEBVIEW.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <WebView
+        android:id="@+id/webView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+</FrameLayout>
+
+
+DIALOG_SETTINGS.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- Modo oscuro -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Tema oscuro" />
+        <Switch
+            android:id="@+id/switchDarkMode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <!-- Tamaño de fuente -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Tamaño de letra (WebView)"
+            android:layout_marginTop="16dp" />
+
+        <RadioGroup
+            android:id="@+id/radioGroupFontSize"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/radioSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Pequeño" />
+
+            <RadioButton
+                android:id="@+id/radioNormal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Normal" />
+
+            <RadioButton
+                android:id="@+id/radioLarge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Grande" />
+        </RadioGroup>
+
+        <!-- Forma de los botones -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Botones redondeados"
+            android:layout_marginTop="16dp" />
+
+        <Switch
+            android:id="@+id/switchButtonShape"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+</ScrollView>
+
+
+
+TOOLBAR.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/topBar"
+    android:layout_width="match_parent"
+    android:layout_height="100dp"
+    android:orientation="vertical"
+    android:background="@drawable/fondo_toolbar2"
+    android:elevation="0dp">
+
+    <!-- Fila: Título + Logo (centrados horizontalmente) -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:layout_gravity="center"
+        android:padding="8dp">
+
+        <ImageView
+            android:id="@+id/toolbarLogo"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:src="@drawable/ico_cora"
+            android:layout_marginEnd="8dp"
+            android:contentDescription="Logo"/>
+
+        <TextView
+            android:id="@+id/toolbarTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="MEDISUM"
+            android:textColor="#FFFFFF"
+            android:textSize="20sp"
+            android:textStyle="bold"/>
+    </LinearLayout>
+
+    <!-- Fila: Botones -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="2dp">
+
+        <Button
+            android:id="@+id/btnHome"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="⌂"
+            android:textColor="@android:color/white"
+            android:background="#07940B"
+            android:layout_margin="5dp"
+            android:textSize="20sp"/>
+
+        <Button
+            android:id="@+id/btnBack"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="←"
+            android:textColor="@android:color/white"
+            android:background="#07940B"
+            android:layout_margin="5dp"
+            android:textSize="20sp"/>
+
+        <Button
+            android:id="@+id/btnRefresh"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="⟳"
+            android:textColor="@android:color/white"
+            android:background="@drawable/bg_button_toolbar_local"
+            android:layout_margin="5dp"
+            android:textSize="16sp"/>
+
+        <Button
+            android:id="@+id/btnSettings"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="⚙"
+            android:textColor="@android:color/white"
+            android:background="@drawable/bg_button_toolbar_local"
+            android:layout_margin="5dp"
+            android:textSize="18sp"/>
+    </LinearLayout>
+</LinearLayout>
+
+
+COLORS.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF6200EE</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+    <color name="black">#FF000000</color>
+    <color name="light_blue_600">#FF039BE5</color>
+    <color name="light_blue_900">#FF01579B</color>
+    <color name="light_blue_A200">#FF40C4FF</color>
+    <color name="light_blue_A400">#FF00B0FF</color>
+    <color name="black_overlay">#66000000</color>
+    <color name="teal_primary">#03A9F4</color>
+    <color name="teal_primaryDark">#0288D1</color>
+    <color name="teal_dark_bg">#004F61</color>
+    <color name="white">#FFFFFF</color>
+</resources>
+
+
+IC_LAUNCHER_BACKGROUND.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#000000</color>
+</resources>
+
+
+STRINGS.XML
+
+<resources>
+    <string name="app_name">Medisum</string>
+    <string name="title_activity_fullscreen">FullscreenActivity</string>
+    <string name="dummy_button">Dummy Button</string>
+    <string name="dummy_content">DUMMY\nCONTENT</string>
+</resources>
+
+
+STYLES.XML
+
+<resources>
+    <style name="ToolbarButtonStyle" parent="">
+        <item name="android:backgroundTint">@null</item> <!-- elimina tintado -->
+        <item name="android:background">@drawable/toolbar_button_background</item>
+        <item name="android:textColor">@android:color/white</item>
+    </style>
+</resources>
+
+
+THEMES.XML
+
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Tema base (claro) -->
+    <style name="Theme.Medisum" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <!-- Configuración de colores -->
+        <item name="colorPrimary">#FF9800</item>
+        <item name="colorPrimaryDark">#005B52</item>
+        <item name="colorAccent">@color/teal_700</item>
+    </style>
+</resources>
+
+
+THEMES.XML (NIGHT)
+
+<resources>
+
+    <style name="Theme.Medisum" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="fullscreenBackgroundColor">@color/light_blue_900</item>
+        <item name="fullscreenTextColor">@color/light_blue_A400</item>
+    </style>
+</resources>
+
+
